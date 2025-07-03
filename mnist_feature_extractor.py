@@ -1,5 +1,3 @@
-
-
 import numpy as np
 import cv2
 import struct
@@ -50,6 +48,22 @@ def detect_corners_filtered(binary, min_distance=3):
             filtered.append((x, y))
     return filtered, skeleton
 
+def estimate_writing_direction_fft(binary):
+    skeleton = basic_thinning(binary).astype(np.uint8) * 255
+    grad_x = cv2.Sobel(skeleton, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(skeleton, cv2.CV_64F, 0, 1, ksize=3)
+    grad_complex = grad_x + 1j * grad_y
+    fft_result = np.fft.fftshift(np.fft.fft2(grad_complex))
+    power_spectrum = np.abs(fft_result)**2
+    h, w = power_spectrum.shape
+    y, x = np.meshgrid(np.linspace(-0.5, 0.5, h), np.linspace(-0.5, 0.5, w), indexing='ij')
+    angles = np.arctan2(y, x)
+    angles_deg = np.degrees(angles)
+    hist, bins = np.histogram(angles_deg, bins=180, range=(-180, 180), weights=power_spectrum)
+    dominant_bin = np.argmax(hist)
+    dominant_angle = (bins[dominant_bin] + bins[dominant_bin + 1]) / 2
+    return dominant_angle
+
 def flood_fill(binary, y, x, visited):
     stack = [(y, x)]
     h, w = binary.shape
@@ -93,11 +107,31 @@ def symmetry_metric(binary):
     total = left.size
     return (similarity / total) * 100
 
+def zone_density_features(binary, grid_size=(4, 4)):
+    h, w = binary.shape
+    gh, gw = grid_size
+    zone_h, zone_w = h // gh, w // gw
+    features = []
+    for i in range(gh):
+        for j in range(gw):
+            zone = binary[i*zone_h:(i+1)*zone_h, j*zone_w:(j+1)*zone_w]
+            density = np.sum(zone) / zone.size
+            features.append(density)
+    return features
+
+def hu_moments_features(binary):
+    binary_uint8 = binary.astype(np.uint8) * 255
+    moments = cv2.moments(binary_uint8)
+    hu = cv2.HuMoments(moments).flatten()
+    return hu.tolist()
+
 def extract_features(img, threshold=200):
     binary = img > threshold
     coords = np.argwhere(binary)
     if coords.size == 0:
-        return [0, -1, -1, 0, 0, 0, 0, 0, 0.0]
+        # Return 12 values to match the normal case
+        return [0, -1, -1, 0, 0, 0, 0, 0, 0.0, 0.0, [0]*7, [0]*16]
+    
     dark_pixel_count = len(coords)
     avg_x = np.mean(coords[:, 1])
     avg_y = np.mean(coords[:, 0])
@@ -109,17 +143,22 @@ def extract_features(img, threshold=200):
     loop_count = count_loops(binary)
     corner_count, _ = detect_corners_filtered(binary)
     symmetry = symmetry_metric(binary)
+    writing_angle = estimate_writing_direction_fft(binary)
+    hu_moments_feat = hu_moments_features(binary)  # Renamed to avoid conflict
+    zone_density = zone_density_features(binary)
+    
     return [
         dark_pixel_count, avg_x, avg_y, width, height,
-        intersection_count, loop_count, len(corner_count), symmetry
+        intersection_count, loop_count, len(corner_count), symmetry, writing_angle, 
+        hu_moments_feat, zone_density
     ]
 
 def visualize_features(img, features, corners, binary):
-    dark_pixel_count, avg_x, avg_y, width, height, _, _, _, _ = features
+    dark_pixel_count, avg_x, avg_y, width, height, _, _, _, _, writing_angle, hu_moments_feat, zone_density = features
 
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.imshow(img, cmap='gray')
-    ax.set_title("Feature Visualization")
+    ax.set_title(f"Feature Visualization\nWriting Direction: {writing_angle:.1f}°")
 
     ax.plot(avg_x, avg_y, 'go', label='Center of Mass')
 
@@ -142,65 +181,42 @@ def visualize_features(img, features, corners, binary):
             elif not pixel:
                 inside = False
 
+    skeleton = basic_thinning(binary).astype(np.uint8) * 255
+    grad_x = cv2.Sobel(skeleton, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(skeleton, cv2.CV_64F, 0, 1, ksize=3)
+    step = 3
+    y_grid, x_grid = np.mgrid[0:skeleton.shape[0]:step, 0:skeleton.shape[1]:step]
+    u = grad_x[::step, ::step]
+    v = grad_y[::step, ::step]
+    ax.quiver(x_grid, y_grid, u, -v, color='red', angles='xy', scale_units='xy', scale=1, alpha=0.5)
+
     ax.legend()
     plt.show()
 
-
-
-# ===== Test Image Function (like DigitTester) =====
 columns = [
     'dark_pixel_count', 'avg_x', 'avg_y', 'bbox_width', 'bbox_height',
-    'intersection_count', 'loop_count', 'corner_count', 'symmetry_metric'
+    'intersection_count', 'loop_count', 'corner_count', 'symmetry_metric', 'writing_angle',
+    'hu_moments_features', 'zone_density'
 ]
 
 def test_image(index, images, labels):
     img = images[index]
     label = labels[index]
     binary = img > 200
-    coords = np.argwhere(binary)
-    min_y, min_x = coords.min(axis=0)
-    max_y, max_x = coords.max(axis=0)
-    avg_x = np.mean(coords[:, 1])
-    avg_y = np.mean(coords[:, 0])
-
-    # Visualization
     feats = extract_features(img)
     corners, _ = detect_corners_filtered(binary)
-    fig, ax = plt.subplots()
-    ax.imshow(img, cmap='gray')
-    ax.add_patch(plt.Rectangle((min_x, min_y), max_x - min_x + 1, max_y - min_y + 1,
-                               linewidth=2, edgecolor='r', facecolor='none'))
-    ax.plot(avg_x, avg_y, 'bo', label='Center')
-    # Plot corners
-    for (x, y) in corners:
-        ax.plot(x, y, 'ro', markersize=4, label='Corner' if (x, y) == corners[0] else "")
-    # Plot intersections (horizontal lines)
-    for y_idx, row in enumerate(binary):
-        inside = False
-        for pixel in row:
-            if pixel and not inside:
-                inside = True
-                ax.axhline(y=y_idx, color='cyan', linestyle='--', alpha=0.3, label='Intersection' if y_idx == 0 else "")
-                break
-            elif not pixel:
-                inside = False
-    handles, labels_ = ax.get_legend_handles_labels()
-    by_label = dict(zip(labels_, handles))
-    ax.legend(by_label.values(), by_label.keys())
-    plt.title(f"Digit: {label} | Index: {index}")
-    plt.show()
-
-    # Feature Output
+    visualize_features(img, feats, corners, binary)
     print(f"--- Features for digit '{label}' at index {index} ---")
     for name, val in zip(columns, feats):
-        print(f"{name:20s}: {val:.3f}" if isinstance(val, float) else f"{name:20s}: {val}")
+        if isinstance(val, float):
+            print(f"{name:20s}: {val:.3f}")
+        elif isinstance(val, list) or isinstance(val, np.ndarray):
+            print(f"{name:20s}: {np.array2string(np.array(val), precision=3)}")
+        else:
+            print(f"{name:20s}: {val}")
 
-
-# ===== Example Usage =====
 if __name__ == "__main__":
     images = load_images(IMAGE_FILE)
     labels = load_labels(LABEL_FILE)
-
-    # Test specific images (edit this list as needed)
-    for idx in [0, 1, 2,3,4,5,6,7,8,9]:
+    for idx in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
         test_image(idx, images, labels)
