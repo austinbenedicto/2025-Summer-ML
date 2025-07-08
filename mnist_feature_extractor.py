@@ -48,21 +48,38 @@ def detect_corners_filtered(binary, min_distance=3):
             filtered.append((x, y))
     return filtered, skeleton
 
-def estimate_writing_direction_fft(binary):
-    skeleton = basic_thinning(binary).astype(np.uint8) * 255
-    grad_x = cv2.Sobel(skeleton, cv2.CV_64F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(skeleton, cv2.CV_64F, 0, 1, ksize=3)
-    grad_complex = grad_x + 1j * grad_y
-    fft_result = np.fft.fftshift(np.fft.fft2(grad_complex))
-    power_spectrum = np.abs(fft_result)**2
-    h, w = power_spectrum.shape
-    y, x = np.meshgrid(np.linspace(-0.5, 0.5, h), np.linspace(-0.5, 0.5, w), indexing='ij')
-    angles = np.arctan2(y, x)
-    angles_deg = np.degrees(angles)
-    hist, bins = np.histogram(angles_deg, bins=180, range=(-180, 180), weights=power_spectrum)
-    dominant_bin = np.argmax(hist)
-    dominant_angle = (bins[dominant_bin] + bins[dominant_bin + 1]) / 2
-    return dominant_angle
+def estimate_writing_directions_fft(binary):
+    """
+    Returns global and quadrant-based dominant direction and magnitude.
+    Each returned value is a tuple: (angle in degrees, magnitude).
+    """
+    def compute_direction_magnitude(region):
+        skeleton = basic_thinning(region).astype(np.uint8) * 255
+        grad_x = cv2.Sobel(skeleton, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(skeleton, cv2.CV_64F, 0, 1, ksize=3)
+        grad_complex = grad_x + 1j * grad_y
+        fft_result = np.fft.fftshift(np.fft.fft2(grad_complex))
+        power_spectrum = np.abs(fft_result)**2
+        h, w = power_spectrum.shape
+        y, x = np.meshgrid(np.linspace(-0.5, 0.5, h), np.linspace(-0.5, 0.5, w), indexing='ij')
+        angles = np.arctan2(y, x)
+        angles_deg = np.degrees(angles)
+        hist, bins = np.histogram(angles_deg, bins=180, range=(-180, 180), weights=power_spectrum)
+        dominant_bin = np.argmax(hist)
+        dominant_angle = (bins[dominant_bin] + bins[dominant_bin + 1]) / 2
+        magnitude = hist[dominant_bin]
+        return (dominant_angle, magnitude)
+
+    global_dir_mag = compute_direction_magnitude(binary)
+
+    h, w = binary.shape
+    quarters = [
+        binary[:h//2, :w//2], binary[:h//2, w//2:],
+        binary[h//2:, :w//2], binary[h//2:, w//2:]
+    ]
+    quadrant_dirs_mags = [compute_direction_magnitude(q) for q in quarters]
+
+    return global_dir_mag, quadrant_dirs_mags
 
 def flood_fill(binary, y, x, visited):
     stack = [(y, x)]
@@ -129,9 +146,8 @@ def extract_features(img, threshold=200):
     binary = img > threshold
     coords = np.argwhere(binary)
     if coords.size == 0:
-        # Return 12 values to match the normal case
-        return [0, -1, -1, 0, 0, 0, 0, 0, 0.0, 0.0, [0]*7, [0]*16]
-    
+        # Return the correct number of zeros for all features
+        return [0, -1, -1, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0] + [0.0]*8 + [0.0]*8 + [0.0]*7
     dark_pixel_count = len(coords)
     avg_x = np.mean(coords[:, 1])
     avg_y = np.mean(coords[:, 0])
@@ -143,18 +159,23 @@ def extract_features(img, threshold=200):
     loop_count = count_loops(binary)
     corner_count, _ = detect_corners_filtered(binary)
     symmetry = symmetry_metric(binary)
-    writing_angle = estimate_writing_direction_fft(binary)
-    hu_moments_feat = hu_moments_features(binary)  # Renamed to avoid conflict
-    zone_density = zone_density_features(binary)
-    
+    (global_angle, global_magnitude), quadrants = estimate_writing_directions_fft(binary)
+    quadrant_angles = [q[0] for q in quadrants]
+    quadrant_magnitudes = [q[1] for q in quadrants]
+    zone_densities = zone_density_features(binary)
+    hu = hu_moments_features(binary)
     return [
         dark_pixel_count, avg_x, avg_y, width, height,
-        intersection_count, loop_count, len(corner_count), symmetry, writing_angle, 
-        hu_moments_feat, zone_density
-    ]
+        intersection_count, loop_count, len(corner_count), symmetry,
+        global_angle, global_magnitude
+    ] + quadrant_angles + quadrant_magnitudes + zone_densities + hu
+
 
 def visualize_features(img, features, corners, binary):
-    dark_pixel_count, avg_x, avg_y, width, height, _, _, _, _, writing_angle, hu_moments_feat, zone_density = features
+    # Unpack only the first five features for visualization
+    dark_pixel_count, avg_x, avg_y, width, height = features[:5]
+    # For writing_angle, use features[9] if needed for title
+    writing_angle = features[9] if len(features) > 9 else 0.0
 
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.imshow(img, cmap='gray')
@@ -195,8 +216,15 @@ def visualize_features(img, features, corners, binary):
 
 columns = [
     'dark_pixel_count', 'avg_x', 'avg_y', 'bbox_width', 'bbox_height',
-    'intersection_count', 'loop_count', 'corner_count', 'symmetry_metric', 'writing_angle',
-    'hu_moments_features', 'zone_density'
+    'intersection_count', 'loop_count', 'corner_count', 'symmetry_metric',
+    'writing_angle', 'writing_magnitude',
+    'q1_angle', 'q2_angle', 'q3_angle', 'q4_angle',
+    'q1_magnitude', 'q2_magnitude', 'q3_magnitude', 'q4_magnitude',
+    'zone_density_1', 'zone_density_2', 'zone_density_3', 'zone_density_4',
+    'zone_density_5', 'zone_density_6', 'zone_density_7', 'zone_density_8',
+    'zone_density_9', 'zone_density_10', 'zone_density_11', 'zone_density_12',
+    'zone_density_13', 'zone_density_14', 'zone_density_15', 'zone_density_16',
+    'hu1', 'hu2', 'hu3', 'hu4', 'hu5', 'hu6', 'hu7'
 ]
 
 def test_image(index, images, labels):
