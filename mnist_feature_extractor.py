@@ -147,7 +147,7 @@ def extract_features(img, threshold=200):
     coords = np.argwhere(binary)
     if coords.size == 0:
         # Return the correct number of zeros for all features
-        return [0, -1, -1, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0] + [0.0]*8 + [0.0]*8 + [0.0]*7
+        return [0, -1, -1, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0] + [0.0]*8  # + [0.0]*8 + [0.0]*7
     dark_pixel_count = len(coords)
     avg_x = np.mean(coords[:, 1])
     avg_y = np.mean(coords[:, 0])
@@ -162,13 +162,13 @@ def extract_features(img, threshold=200):
     (global_angle, global_magnitude), quadrants = estimate_writing_directions_fft(binary)
     quadrant_angles = [q[0] for q in quadrants]
     quadrant_magnitudes = [q[1] for q in quadrants]
-    zone_densities = zone_density_features(binary)
-    hu = hu_moments_features(binary)
+    # zone_densities = zone_density_features(binary)
+    # hu = hu_moments_features(binary)
     return [
         dark_pixel_count, avg_x, avg_y, width, height,
         intersection_count, loop_count, len(corner_count), symmetry,
         global_angle, global_magnitude
-    ] + quadrant_angles + quadrant_magnitudes + zone_densities + hu
+    ] + quadrant_angles + quadrant_magnitudes  # + zone_densities + hu
 
 
 # Column names for CSV output
@@ -177,12 +177,14 @@ columns = [
     'intersection_count', 'loop_count', 'corner_count', 'symmetry_metric',
     'writing_angle', 'writing_magnitude',
     'q1_angle', 'q2_angle', 'q3_angle', 'q4_angle',
-    'q1_magnitude', 'q2_magnitude', 'q3_magnitude', 'q4_magnitude',
-    'zone_density_1', 'zone_density_2', 'zone_density_3', 'zone_density_4',
-    'zone_density_5', 'zone_density_6', 'zone_density_7', 'zone_density_8',
-    'zone_density_9', 'zone_density_10', 'zone_density_11', 'zone_density_12',
-    'zone_density_13', 'zone_density_14', 'zone_density_15', 'zone_density_16',
-    'hu1', 'hu2', 'hu3', 'hu4', 'hu5', 'hu6', 'hu7'
+    'q1_magnitude', 'q2_magnitude', 'q3_magnitude', 'q4_magnitude'
+    # Zone density features (commented out)
+    # 'zone_density_1', 'zone_density_2', 'zone_density_3', 'zone_density_4',
+    # 'zone_density_5', 'zone_density_6', 'zone_density_7', 'zone_density_8',
+    # 'zone_density_9', 'zone_density_10', 'zone_density_11', 'zone_density_12',
+    # 'zone_density_13', 'zone_density_14', 'zone_density_15', 'zone_density_16',
+    # Hu moments features (commented out)
+    # 'hu1', 'hu2', 'hu3', 'hu4', 'hu5', 'hu6', 'hu7'
 ]
 
 if __name__ == "__main__":
