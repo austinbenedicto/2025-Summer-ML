@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 import struct
-import matplotlib.pyplot as plt
+import pandas as pd
 
 # File paths for MNIST data
 IMAGE_FILE = 'archive/train-images.idx3-ubyte'
@@ -171,49 +171,7 @@ def extract_features(img, threshold=200):
     ] + quadrant_angles + quadrant_magnitudes + zone_densities + hu
 
 
-def visualize_features(img, features, corners, binary):
-    # Unpack only the first five features for visualization
-    dark_pixel_count, avg_x, avg_y, width, height = features[:5]
-    # For writing_angle, use features[9] if needed for title
-    writing_angle = features[9] if len(features) > 9 else 0.0
-
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.imshow(img, cmap='gray')
-    ax.set_title(f"Feature Visualization\nWriting Direction: {writing_angle:.1f}°")
-
-    ax.plot(avg_x, avg_y, 'go', label='Center of Mass')
-
-    min_y, min_x = np.argwhere(binary).min(axis=0)
-    max_y, max_x = np.argwhere(binary).max(axis=0)
-    rect = plt.Rectangle((min_x, min_y), max_x - min_x + 1, max_y - min_y + 1,
-                         linewidth=1.5, edgecolor='yellow', facecolor='none', label='Bounding Box')
-    ax.add_patch(rect)
-
-    for (x, y) in corners:
-        ax.plot(x, y, 'ro', markersize=3)
-
-    for y, row in enumerate(binary):
-        inside = False
-        for pixel in row:
-            if pixel and not inside:
-                inside = True
-                ax.axhline(y=y, color='cyan', linestyle='--', alpha=0.3)
-                break
-            elif not pixel:
-                inside = False
-
-    skeleton = basic_thinning(binary).astype(np.uint8) * 255
-    grad_x = cv2.Sobel(skeleton, cv2.CV_64F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(skeleton, cv2.CV_64F, 0, 1, ksize=3)
-    step = 3
-    y_grid, x_grid = np.mgrid[0:skeleton.shape[0]:step, 0:skeleton.shape[1]:step]
-    u = grad_x[::step, ::step]
-    v = grad_y[::step, ::step]
-    ax.quiver(x_grid, y_grid, u, -v, color='red', angles='xy', scale_units='xy', scale=1, alpha=0.5)
-
-    ax.legend()
-    plt.show()
-
+# Column names for CSV output
 columns = [
     'dark_pixel_count', 'avg_x', 'avg_y', 'bbox_width', 'bbox_height',
     'intersection_count', 'loop_count', 'corner_count', 'symmetry_metric',
@@ -227,24 +185,73 @@ columns = [
     'hu1', 'hu2', 'hu3', 'hu4', 'hu5', 'hu6', 'hu7'
 ]
 
-def test_image(index, images, labels):
-    img = images[index]
-    label = labels[index]
-    binary = img > 200
-    feats = extract_features(img)
-    corners, _ = detect_corners_filtered(binary)
-    visualize_features(img, feats, corners, binary)
-    print(f"--- Features for digit '{label}' at index {index} ---")
-    for name, val in zip(columns, feats):
-        if isinstance(val, float):
-            print(f"{name:20s}: {val:.3f}")
-        elif isinstance(val, list) or isinstance(val, np.ndarray):
-            print(f"{name:20s}: {np.array2string(np.array(val), precision=3)}")
-        else:
-            print(f"{name:20s}: {val}")
-
 if __name__ == "__main__":
+    # Configuration: Set the percentage of images to omit (0-100)
+    # For example, omit_percentage = 20 means use only 80% of images
+    omit_percentage = 0  # Change this value to omit images (e.g., 20 for 20%)
+    
+    print("Loading MNIST data...")
     images = load_images(IMAGE_FILE)
     labels = load_labels(LABEL_FILE)
-    for idx in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
-        test_image(idx, images, labels)
+    
+    # If omitting images, select equal numbers of each digit
+    if omit_percentage > 0:
+        print(f"Selecting {100 - omit_percentage}% of images with equal digit representation...")
+        
+        # Group images by digit
+        digit_indices = {digit: [] for digit in range(10)}
+        for i, label in enumerate(labels):
+            digit_indices[label].append(i)
+        
+        # Calculate how many images to keep per digit
+        min_count = min(len(indices) for indices in digit_indices.values())
+        keep_per_digit = int(min_count * (100 - omit_percentage) / 100)
+        
+        print(f"Original: ~{min_count} images per digit")
+        print(f"Keeping: {keep_per_digit} images per digit")
+        
+        # Select equal numbers from each digit
+        selected_indices = []
+        np.random.seed(42)  # For reproducible results
+        for digit in range(10):
+            selected = np.random.choice(digit_indices[digit], keep_per_digit, replace=False)
+            selected_indices.extend(selected)
+        
+        # Sort indices to maintain some order
+        selected_indices.sort()
+        
+        # Filter images and labels
+        images = images[selected_indices]
+        labels = labels[selected_indices]
+        
+        print(f"Selected {len(images)} images total")
+    
+    print(f"Processing {len(images)} images...")
+    feature_data = []
+    
+    for i in range(len(images)):
+        if i % 1000 == 0:
+            print(f"Processed {i}/{len(images)} images...")
+        
+        features = extract_features(images[i])
+        # Add label as first column
+        row = [labels[i]] + features
+        feature_data.append(row)
+    
+    # Create DataFrame
+    df_columns = ['label'] + columns
+    df = pd.DataFrame(feature_data, columns=df_columns)
+    
+    # Save to CSV with appropriate filename
+    if omit_percentage > 0:
+        csv_filename = f"mnist_features_{100-omit_percentage}percent.csv"
+    else:
+        csv_filename = "mnist_features_complete.csv"
+    
+    df.to_csv(csv_filename, index=False)
+    
+    print(f"✅ Features extracted and saved to '{csv_filename}'")
+    print(f"Dataset shape: {df.shape}")
+    print(f"Distribution by digit:")
+    print(df['label'].value_counts().sort_index())
+    print(f"Columns: {list(df.columns)}")
