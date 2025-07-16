@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import struct
+import cv2
 
 # File paths
 IMAGE_FILE = 'archive/train-images.idx3-ubyte'
@@ -19,6 +20,93 @@ def load_labels(label_path):
         magic, num = struct.unpack('>II', f.read(8))
         labels = np.frombuffer(f.read(), dtype=np.uint8)
     return labels
+
+def basic_thinning(binary):
+    """Apply basic thinning/skeletonization to binary image"""
+    img = binary.astype(np.uint8) * 255
+    prev = np.zeros_like(img)
+    kernel = np.ones((3, 3), np.uint8)
+    while True:
+        eroded = cv2.erode(img, kernel)
+        temp = cv2.dilate(eroded, kernel)
+        temp = cv2.subtract(img, temp)
+        skel = cv2.bitwise_or(prev, temp)
+        if cv2.countNonZero(cv2.absdiff(img, eroded)) == 0:
+            break
+        img = eroded.copy()
+        prev = skel.copy()
+    return skel > 0
+
+def estimate_writing_direction_fft(binary):
+    """Estimate writing direction using FFT analysis - returns global and quarter-based angles"""
+    skeleton = basic_thinning(binary).astype(np.uint8) * 255
+    grad_x = cv2.Sobel(skeleton, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(skeleton, cv2.CV_64F, 0, 1, ksize=3)
+    grad_complex = grad_x + 1j * grad_y
+    
+    def calculate_angle(grad_comp):
+        """Helper function to calculate dominant angle from gradient"""
+        if np.sum(np.abs(grad_comp)) == 0:
+            return 0.0
+        fft_result = np.fft.fftshift(np.fft.fft2(grad_comp))
+        power_spectrum = np.abs(fft_result)**2
+        h, w = power_spectrum.shape
+        y, x = np.meshgrid(np.linspace(-0.5, 0.5, h), np.linspace(-0.5, 0.5, w), indexing='ij')
+        angles = np.arctan2(y, x)
+        angles_deg = np.degrees(angles)
+        hist, bins = np.histogram(angles_deg, bins=180, range=(-180, 180), weights=power_spectrum)
+        dominant_bin = np.argmax(hist)
+        dominant_angle = (bins[dominant_bin] + bins[dominant_bin + 1]) / 2
+        return dominant_angle
+    
+    # Global angle
+    global_angle = calculate_angle(grad_complex)
+    
+    # Quarter-based angles
+    h, w = grad_complex.shape
+    mid_h, mid_w = h // 2, w // 2
+    
+    quarter_angles = []
+    # Top-left quarter
+    quarter_angles.append(calculate_angle(grad_complex[:mid_h, :mid_w]))
+    # Top-right quarter
+    quarter_angles.append(calculate_angle(grad_complex[:mid_h, mid_w:]))
+    # Bottom-left quarter
+    quarter_angles.append(calculate_angle(grad_complex[mid_h:, :mid_w]))
+    # Bottom-right quarter
+    quarter_angles.append(calculate_angle(grad_complex[mid_h:, mid_w:]))
+    
+    return [global_angle] + quarter_angles
+
+def estimate_writing_direction_magnitude(binary):
+    """Estimate writing direction magnitude using gradient analysis - returns global and quarter-based magnitudes"""
+    skeleton = basic_thinning(binary).astype(np.uint8) * 255
+    grad_x = cv2.Sobel(skeleton, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(skeleton, cv2.CV_64F, 0, 1, ksize=3)
+    magnitude = np.sqrt(grad_x**2 + grad_y**2)
+    
+    def calculate_magnitude(mag_array):
+        """Helper function to calculate mean magnitude"""
+        return np.mean(mag_array) if mag_array.size > 0 else 0.0
+    
+    # Global magnitude
+    global_magnitude = calculate_magnitude(magnitude)
+    
+    # Quarter-based magnitudes
+    h, w = magnitude.shape
+    mid_h, mid_w = h // 2, w // 2
+    
+    quarter_magnitudes = []
+    # Top-left quarter
+    quarter_magnitudes.append(calculate_magnitude(magnitude[:mid_h, :mid_w]))
+    # Top-right quarter
+    quarter_magnitudes.append(calculate_magnitude(magnitude[:mid_h, mid_w:]))
+    # Bottom-left quarter
+    quarter_magnitudes.append(calculate_magnitude(magnitude[mid_h:, :mid_w]))
+    # Bottom-right quarter
+    quarter_magnitudes.append(calculate_magnitude(magnitude[mid_h:, mid_w:]))
+    
+    return [global_magnitude] + quarter_magnitudes
 
 def flood_fill(binary, y, x, visited):
     """Flood-fill to label connected regions (used for loop counting)"""
@@ -78,13 +166,13 @@ def symmetry_metric(binary_img):
 def extract_features(img, threshold=50):
     """
     Extract all features from one MNIST image.
-    Returns a list of 9 features.
+    Returns a list of 19 features (original 9 + 10 writing direction features).
     """
     binary = img < threshold  # dark = True
     dark_pixel_coords = np.argwhere(binary)
 
     if dark_pixel_coords.size == 0:
-        return [0, -1, -1, 0, 0, 0, 0, 0, 1.0]
+        return [0, -1, -1, 0, 0, 0, 0, 0, 1.0] + [0.0] * 10
 
     # Feature 1: Dark pixel count
     dark_pixel_count = len(dark_pixel_coords)
@@ -114,10 +202,16 @@ def extract_features(img, threshold=50):
     # Feature 9: Symmetry
     symmetry = symmetry_metric(binary)
 
+    # Features 10-14: Writing direction angles (global + 4 quarters)
+    writing_angles = estimate_writing_direction_fft(binary)
+
+    # Features 15-19: Writing direction magnitudes (global + 4 quarters)
+    writing_magnitudes = estimate_writing_direction_magnitude(binary)
+
     return [
         dark_pixel_count, avg_x, avg_y, width, height,
         intersection_count, loop_count, corner_count, symmetry
-    ]
+    ] + writing_angles + writing_magnitudes
 
 # Load dataset
 images = load_images(IMAGE_FILE)
@@ -138,7 +232,17 @@ columns = [
     'intersection_count',
     'loop_count',
     'corner_count',
-    'symmetry_metric'
+    'symmetry_metric',
+    'writing_angle_global',
+    'writing_angle_tl',
+    'writing_angle_tr',
+    'writing_angle_bl',
+    'writing_angle_br',
+    'writing_magnitude_global',
+    'writing_magnitude_tl',
+    'writing_magnitude_tr',
+    'writing_magnitude_bl',
+    'writing_magnitude_br'
 ]
 
 # Build DataFrame and save
