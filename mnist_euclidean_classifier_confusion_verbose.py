@@ -7,9 +7,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import matplotlib.pyplot as plt
 
+
 # PARAMETERS
 CSV_PATH = "mnist_extended_features_no_scipy.csv"
-LIMIT_PER_DIGIT = 5000  # Limit number of samples per digit
+LIMIT_PER_DIGIT = 4000  # Limit number of samples per digit
 
 # Define weights for each feature
 FEATURE_WEIGHTS = {

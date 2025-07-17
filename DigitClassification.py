@@ -4,6 +4,8 @@ from sklearn.metrics import classification_report, accuracy_score
 import pandas as pd
 import struct
 import cv2
+import numpy as np
+from skimage.morphology import skeletonize
 
 # File paths
 IMAGE_FILE = 'archive/train-images.idx3-ubyte'
@@ -23,21 +25,27 @@ def load_labels(label_path):
         labels = np.frombuffer(f.read(), dtype=np.uint8)
     return labels
 
+# def basic_thinning(binary):
+#     """Apply basic thinning/skeletonization to binary image"""
+#     img = binary.astype(np.uint8) * 255
+#     prev = np.zeros_like(img)
+#     kernel = np.ones((3, 3), np.uint8)
+#     while True:
+#         eroded = cv2.erode(img, kernel)
+#         temp = cv2.dilate(eroded, kernel)
+#         temp = cv2.subtract(img, temp)
+#         skel = cv2.bitwise_or(prev, temp)
+#         if cv2.countNonZero(cv2.absdiff(img, eroded)) == 0:
+#             break
+#         img = eroded.copy()
+#         prev = skel.copy()
+#     return skel > 0
+
 def basic_thinning(binary):
-    """Apply basic thinning/skeletonization to binary image"""
-    img = binary.astype(np.uint8) * 255
-    prev = np.zeros_like(img)
-    kernel = np.ones((3, 3), np.uint8)
-    while True:
-        eroded = cv2.erode(img, kernel)
-        temp = cv2.dilate(eroded, kernel)
-        temp = cv2.subtract(img, temp)
-        skel = cv2.bitwise_or(prev, temp)
-        if cv2.countNonZero(cv2.absdiff(img, eroded)) == 0:
-            break
-        img = eroded.copy()
-        prev = skel.copy()
-    return skel > 0
+    """Apply proper skeletonization using scikit-image"""
+    # Use scikit-image's skeletonization
+    skeleton = skeletonize(binary)
+    return skeleton
 
 def estimate_writing_direction_fft(binary):
     """Estimate writing direction using FFT analysis - returns global and quarter-based angles"""
